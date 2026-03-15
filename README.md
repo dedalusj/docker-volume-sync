@@ -46,7 +46,7 @@ services:
 
   # The sidecar sync service
   backup:
-    build: .
+    image: ghcr.io/dedalusj/docker-volume-sync:latest
     environment:
       - DESTINATION_PATH=s3://my-backup-bucket/postgres
       - SYNC_SCHEDULE=0 3 * * *  # Run at 3 AM daily
@@ -78,13 +78,24 @@ To sync to a Google Drive folder, you can configure an `rclone` remote using env
 
 ```yaml
 services:
+  # Your main application
+  app:
+    image: your-app-image:latest
+    volumes:
+      - app_data:/app/data
+    restart: always
+    depends_on:
+      backup:
+        condition: service_healthy
+
+  # The sidecar sync service
   backup:
-    build: .
+    image: ghcr.io/dedalusj/docker-volume-sync:latest
     environment:
       # Use an rclone remote named 'gdrive' pointing to a specific folder
       - DESTINATION_PATH=gdrive:my-backup-folder
       - SYNC_SCHEDULE=0 3 * * *
-      - VOLUME_NAME=db_data
+      - VOLUME_NAME=app_data
       - VOLUME_PATH=/data
       
       # Configure the 'gdrive' remote inline
@@ -97,5 +108,14 @@ services:
       # - RCLONE_CONFIG_GDRIVE_TOKEN=${GDRIVE_OAUTH_TOKEN_JSON}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - db_data:/data
+      - app_data:/data
+    healthcheck:
+      test: ["CMD", "/app/volumesync", "health"]
+      interval: 10s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  app_data:
+    name: app_data
 ```
