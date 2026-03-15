@@ -6,13 +6,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -o s3sync ./cmd/s3sync
+RUN CGO_ENABLED=0 go build -o volumesync ./cmd/volumesync
 
 FROM alpine:latest
 
 WORKDIR /app
 RUN apk add --no-cache ca-certificates
 
-COPY --from=builder /app/s3sync .
+COPY --from=builder /app/volumesync .
 
-CMD ["./s3sync"]
+CMD ["./volumesync"]

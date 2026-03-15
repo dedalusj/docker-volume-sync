@@ -7,22 +7,38 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/dedalusj/docker-volume-sync/internal/config"
 	"github.com/dedalusj/docker-volume-sync/internal/dockermanager"
 	"github.com/dedalusj/docker-volume-sync/internal/syncer"
+	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/filter"
 	"github.com/robfig/cron/v3"
 )
 
 const (
-	sentinelFilename = ".s3sync_done"
+	sentinelFilename = ".volumesync_done"
 )
 
 func main() {
-	log.Println("Starting Docker Volume S3 Sync...")
+	if len(os.Args) > 1 && os.Args[1] == "health" {
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Printf("Healthcheck failed to load config: %v\n", err)
+			os.Exit(1)
+		}
+		sentinelPath := filepath.Join(cfg.VolumePath, sentinelFilename)
+		if _, err := os.Stat(sentinelPath); err == nil {
+			fmt.Println("Healthy: initial sync completed")
+			os.Exit(0)
+		}
+		fmt.Println("Unhealthy: initial sync not completed")
+		os.Exit(1)
+	}
+
+	log.Println("Starting Docker Volume Sync...")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -37,22 +53,25 @@ func main() {
 
 	ctx := context.Background()
 
-	s3Syncer, err := syncer.New(ctx,
+	f := filter.Opt
+	f.MinAge = fs.DurationOff
+	f.MaxAge = fs.DurationOff
+	f.FilterRule = []string{"- " + sentinelFilename}
+
+	remoteSyncer, err := syncer.New(ctx,
 		syncer.WithConcurrency(cfg.Concurrency),
 		syncer.WithDelete(cfg.DeleteDestination),
-		syncer.WithFilter(func(path string) bool {
-			return !strings.HasSuffix(path, sentinelFilename)
-		}),
+		syncer.WithFilterOpt(f),
 	)
 	if err != nil {
 		log.Fatalf("Failed to create syncer: %v", err)
 	}
 
-	initialSync(ctx, cfg, s3Syncer)
+	initialSync(ctx, cfg, remoteSyncer)
 
 	// Schedule Backup
 	c := cron.New()
-	_, err = c.AddFunc(cfg.SyncSchedule, sync(ctx, cfg, mgr, s3Syncer))
+	_, err = c.AddFunc(cfg.SyncSchedule, sync(ctx, cfg, mgr, remoteSyncer))
 	if err != nil {
 		log.Fatalf("Failed to schedule job: %v", err)
 	}
@@ -69,11 +88,11 @@ func main() {
 	c.Stop()
 }
 
-func initialSync(ctx context.Context, cfg *config.Config, s3Syncer *syncer.Syncer) {
+func initialSync(ctx context.Context, cfg *config.Config, remoteSyncer *syncer.Syncer) {
 	sentinelPath := filepath.Join(cfg.VolumePath, sentinelFilename)
 	if _, err := os.Stat(sentinelPath); os.IsNotExist(err) {
-		log.Println("Sentinel file not found. Starting INITIAL SYNC (S3 -> Volume)...")
-		if err := s3Syncer.Sync(ctx, cfg.S3Path, cfg.VolumePath); err != nil {
+		log.Println("Sentinel file not found. Starting INITIAL SYNC (Destination -> Volume)...")
+		if err := remoteSyncer.Sync(ctx, cfg.DestinationPath, cfg.VolumePath); err != nil {
 			log.Fatalf("Initial sync failed: %v", err)
 		}
 		log.Println("Initial sync completed.")
@@ -85,9 +104,9 @@ func initialSync(ctx context.Context, cfg *config.Config, s3Syncer *syncer.Synce
 	}
 }
 
-func sync(ctx context.Context, cfg *config.Config, mgr *dockermanager.Manager, s3Syncer *syncer.Syncer) func() {
+func sync(ctx context.Context, cfg *config.Config, mgr *dockermanager.Manager, remoteSyncer *syncer.Syncer) func() {
 	return func() {
-		log.Println("Starting scheduled backup (Volume -> S3)...")
+		log.Println("Starting scheduled backup (Volume -> Destination)...")
 
 		stopped, stopErr := stopContainers(ctx, cfg, mgr)
 		if stopErr != nil {
@@ -95,7 +114,7 @@ func sync(ctx context.Context, cfg *config.Config, mgr *dockermanager.Manager, s
 		}
 
 		if stopErr == nil {
-			if syncErr := syncVolume(ctx, cfg, s3Syncer); syncErr != nil {
+			if syncErr := syncVolume(ctx, cfg, remoteSyncer); syncErr != nil {
 				log.Printf("Error syncing volume: %v", syncErr)
 			}
 		}
@@ -122,8 +141,8 @@ func stopContainers(ctx context.Context, cfg *config.Config, mgr *dockermanager.
 	return stopped, nil
 }
 
-func syncVolume(ctx context.Context, cfg *config.Config, s3Syncer *syncer.Syncer) error {
-	if err := s3Syncer.Sync(ctx, cfg.VolumePath, cfg.S3Path); err != nil {
+func syncVolume(ctx context.Context, cfg *config.Config, remoteSyncer *syncer.Syncer) error {
+	if err := remoteSyncer.Sync(ctx, cfg.VolumePath, cfg.DestinationPath); err != nil {
 		return fmt.Errorf("syncing volume: %v", err)
 	}
 	log.Println("Backup completed successfully.")

@@ -19,11 +19,11 @@ func TestLoad(t *testing.T) {
 		{
 			name: "SuccessDefaults",
 			env: map[string]string{
-				"S3_PATH":       "s3://my-bucket/path",
+				"DESTINATION_PATH":       "s3://my-bucket/path",
 				"SYNC_SCHEDULE": "@every 5m",
 			},
 			want: &Config{
-				S3Path:                "s3://my-bucket/path",
+				DestinationPath:                "s3://my-bucket/path",
 				SyncSchedule:          "@every 5m",
 				VolumePath:            "/data",
 				DockerStopGracePeriod: 2 * time.Minute,
@@ -35,7 +35,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "SuccessFull",
 			env: map[string]string{
-				"S3_PATH":                  "s3://other-bucket",
+				"DESTINATION_PATH":                  "s3://other-bucket",
 				"VOLUME_NAME":              "my-vol",
 				"VOLUME_PATH":              "/app/data",
 				"SYNC_SCHEDULE":            "0 0 * * *",
@@ -44,7 +44,7 @@ func TestLoad(t *testing.T) {
 				"SYNC_CONCURRENCY":         "4",
 			},
 			want: &Config{
-				S3Path:                "s3://other-bucket",
+				DestinationPath:                "s3://other-bucket",
 				VolumeName:            "my-vol",
 				VolumePath:            "/app/data",
 				SyncSchedule:          "0 0 * * *",
@@ -55,7 +55,7 @@ func TestLoad(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "MissingS3Path",
+			name: "MissingDestinationPath",
 			env: map[string]string{
 				"SYNC_SCHEDULE": "@every 1m",
 			},
@@ -65,7 +65,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "MissingSyncSchedule",
 			env: map[string]string{
-				"S3_PATH": "s3://bucket",
+				"DESTINATION_PATH": "s3://bucket",
 			},
 			want:    nil,
 			wantErr: true,
@@ -73,7 +73,7 @@ func TestLoad(t *testing.T) {
 		{
 			name: "InvalidGracePeriod",
 			env: map[string]string{
-				"S3_PATH":                  "s3://bucket",
+				"DESTINATION_PATH":                  "s3://bucket",
 				"SYNC_SCHEDULE":            "@every 1m",
 				"DOCKER_STOP_GRACE_PERIOD": "invalid",
 			},
@@ -83,13 +83,13 @@ func TestLoad(t *testing.T) {
 		{
 			name: "InvalidConcurrency",
 			env: map[string]string{
-				"S3_PATH":          "s3://bucket",
+				"DESTINATION_PATH":          "s3://bucket",
 				"SYNC_SCHEDULE":    "@every 1m",
 				"SYNC_CONCURRENCY": "not-a-number",
 			},
 			// Expect defaults for concurrency if invalid
 			want: &Config{
-				S3Path:                "s3://bucket",
+				DestinationPath:                "s3://bucket",
 				SyncSchedule:          "@every 1m",
 				VolumePath:            "/data",
 				DockerStopGracePeriod: 2 * time.Minute,

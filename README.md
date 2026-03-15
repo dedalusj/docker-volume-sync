@@ -1,11 +1,12 @@
-# Docker Volume S3 Sync
+# Docker Volume Sync
 
-A sidecar container to synchronize a local Docker volume with AWS S3. It restores the volume from S3 on startup and schedules backups to S3. It optionally stops containers attached to the volume before backup to ensure data integrity. This is particularly useful for volumes containing database data. 
+A sidecar container to synchronize a local Docker volume with any remote storage provider supported by `rclone` (AWS S3, Google Drive, Backblaze B2, Azure, etc.). It restores the volume from the remote on startup and schedules backups. It optionally stops containers attached to the volume before backup to ensure data integrity. This is particularly useful for volumes containing database data. 
 
 ## Features
 
-- **Restore**: On startup it downloads the S3 content to the volume.
-- **Backup**: Periodically syncs the volume content to S3.
+- **Universal Support**: Uses `rclone` under the hood to support multiple backend storages.
+- **Restore**: On startup it downloads the remote content to the volume.
+- **Backup**: Periodically syncs the volume content to the remote.
 - **Safe Backups**: Temporarily stops containers attached to the volume during backup to ensure data integrity.
 - **Concurrent Transfers**: Uses multiple concurrent workers for faster uploads and downloads.
 - **Pruning**: Optionnally delete files in the destination that are no longer present in the source.
@@ -15,22 +16,21 @@ A sidecar container to synchronize a local Docker volume with AWS S3. It restore
 
 | Variable | Description | Default | Required |
 | :--- | :--- | :--- | :--- |
-| `S3_PATH` | The destination S3 URI (e.g., `s3://my-bucket/backups/data`). | - | **Yes** |
+| `DESTINATION_PATH` | The destination URI according to rclone syntax (e.g., `s3://my-bucket/backups/data`, `drive:DatabaseBackup`). | - | **Yes** |
 | `SYNC_SCHEDULE` | Cron expression for the backup schedule (e.g., `@daily`, `0 3 * * *`). | - | **Yes** |
 | `VOLUME_PATH` | The path inside the container where the volume is mounted. | `/data` | No |
 | `VOLUME_NAME` | The name of the Docker volume to manage. If set, containers attached to this volume will be stopped during backup. | - | No |
 | `DOCKER_STOP_GRACE_PERIOD` | Human-readable duration to wait when stopping containers (e.g., `30s`, `1m`). | `2m` | No |
-| `SYNC_DELETE` | If set to `true`, files deleted in the volume will be deleted from S3 during backup (and vice-versa during restore). | `false` | No |
+| `SYNC_DELETE` | If set to `true`, files deleted in the volume will be deleted from the remote during backup (and vice-versa during restore). | `false` | No |
 | `SYNC_CONCURRENCY` | Number of concurrent file transfers. | `16` | No |
-| `AWS_REGION` | AWS Region (standard AWS SDK). | - | Yes |
-| `AWS_ACCESS_KEY_ID` | AWS Access Key ID (standard AWS SDK). | - | Yes |
-| `AWS_SECRET_ACCESS_KEY` | AWS Secret Access Key (standard AWS SDK). | - | Yes |
+
+*Note: You must provide rclone credentials for your `DESTINATION_PATH` via standard rclone environment variables (e.g., `RCLONE_CONFIG_MYREMOTE_TYPE=s3` or standard AWS/GCP auth methods).*
 
 ## Usage
 
 ### Docker Compose Example
 
-Add `s3sync` as a service in your `docker-compose.yml`. Ensure it mounts the same volume as your application and has access to the Docker socket if you want it to stop/start containers.
+Add `volumesync` as a service in your `docker-compose.yml`. Ensure it mounts the same volume as your application and has access to the Docker socket if you want it to stop/start containers.
 
 ```yaml
 services:
@@ -40,25 +40,32 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     restart: always
+    depends_on:
+      backup:
+        condition: service_healthy
 
   # The sidecar sync service
   backup:
     build: .
     environment:
-      - S3_PATH=s3://my-backup-bucket/postgres
+      - DESTINATION_PATH=s3://my-backup-bucket/postgres
       - SYNC_SCHEDULE=0 3 * * *  # Run at 3 AM daily
       - VOLUME_NAME=db_data
       - VOLUME_PATH=/data
       - DOCKER_STOP_GRACE_PERIOD=30s
       - SYNC_DELETE=true
+      # Provide relevant rclone backend configs
       - AWS_REGION=us-west-2
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # Required to stop/start containers
       - db_data:/data # Mount the shared volume to /data (default VOLUME_PATH)
-    depends_on:
-      - db
+    healthcheck:
+      test: ["CMD", "/app/volumesync", "health"]
+      interval: 10s
+      retries: 30
+      start_period: 10s
 
 volumes:
   db_data:

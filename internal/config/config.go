@@ -7,7 +7,7 @@ import (
 )
 
 type Config struct {
-	S3Path                string
+	DestinationPath       string
 	VolumeName            string
 	VolumePath            string
 	SyncSchedule          string
@@ -18,14 +18,14 @@ type Config struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		S3Path:       os.Getenv("S3_PATH"),
+		DestinationPath: os.Getenv("DESTINATION_PATH"),
 		VolumePath:   os.Getenv("VOLUME_PATH"),
 		SyncSchedule: os.Getenv("SYNC_SCHEDULE"),
 		VolumeName:   os.Getenv("VOLUME_NAME"),
 	}
 
-	if cfg.S3Path == "" {
-		return nil, fmt.Errorf("S3_PATH environment variable is required")
+	if cfg.DestinationPath == "" {
+		return nil, fmt.Errorf("DESTINATION_PATH environment variable is required")
 	}
 	if cfg.SyncSchedule == "" {
 		return nil, fmt.Errorf("SYNC_SCHEDULE environment variable is required")
