@@ -71,3 +71,31 @@ volumes:
   db_data:
     name: db_data
 ```
+
+### Google Drive Example
+
+To sync to a Google Drive folder, you can configure an `rclone` remote using environment variables. The easiest way for automated backups is to use a Google Service Account. Ensure you have the Google Drive API enabled in your Google Cloud Console.
+
+```yaml
+services:
+  backup:
+    build: .
+    environment:
+      # Use an rclone remote named 'gdrive' pointing to a specific folder
+      - DESTINATION_PATH=gdrive:my-backup-folder
+      - SYNC_SCHEDULE=0 3 * * *
+      - VOLUME_NAME=db_data
+      - VOLUME_PATH=/data
+      
+      # Configure the 'gdrive' remote inline
+      - RCLONE_CONFIG_GDRIVE_TYPE=drive
+      - RCLONE_CONFIG_GDRIVE_SCOPE=drive
+      # Provide the contents of your Google Service Account JSON file
+      - RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_CREDENTIALS=${GDRIVE_CREDENTIALS_JSON}
+      
+      # Alternatively, if using a standard Google account OAuth token, you can provide the token JSON:
+      # - RCLONE_CONFIG_GDRIVE_TOKEN=${GDRIVE_OAUTH_TOKEN_JSON}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - db_data:/data
+```
