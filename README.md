@@ -17,9 +17,9 @@ A single container service to synchronize multiple Docker volumes with any remot
 
 | Variable | Description | Default | Required |
 | :--- | :--- | :--- | :--- |
-| `DESTINATION_PATH` | The destination URI according to rclone syntax (e.g., `s3://my-bucket/backups`). | - | **Yes** |
+| `DESTINATION_PATH` | The destination URI according to rclone syntax (e.g., `s3:my-bucket/backups`). | - | **Yes** |
 
-*Note: You must also provide rclone credentials for your `DESTINATION_PATH` via standard rclone environment variables (e.g., `RCLONE_CONFIG_MYREMOTE_TYPE=s3`).*
+*Note: You must also provide rclone credentials for your `DESTINATION_PATH` via standard rclone environment variables (e.g., `RCLONE_CONFIG_S3_TYPE=s3`).*
 
 ### Docker Labels (on application containers)
 
@@ -46,9 +46,12 @@ services:
   volumesync:
     image: ghcr.io/dedalusj/docker-volume-sync:latest
     environment:
-      - DESTINATION_PATH=s3://my-backup-bucket
+      - DESTINATION_PATH=s3:my-backup-bucket
       # Provide rclone backend configs
-      - AWS_REGION=us-west-2
+      - RCLONE_CONFIG_S3_TYPE=s3
+      - RCLONE_CONFIG_S3_PROVIDER=AWS
+      - RCLONE_CONFIG_S3_ENV_AUTH=true
+      - RCLONE_CONFIG_S3_REGION=ap-southeast-4
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     volumes:

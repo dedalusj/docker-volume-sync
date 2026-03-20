@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/filter"
 	"github.com/rclone/rclone/fs/sync"
 	_ "github.com/rclone/rclone/backend/all" // register all rclone backends
@@ -75,12 +77,37 @@ func (s *Syncer) Sync(ctx context.Context, src, dst string) error {
 	ci.Checkers = s.concurrency
 
 	ctx = filter.ReplaceConfig(ctx, fi)
+	
+	// Create a new stats object for this sync operation
+	// This ensures that progress is tracked per-sync if multiple are running
+	// Note: GlobalStats is still updated by rclone, but we can track this sync specifically
+	// However, rclone's sync.Sync uses the global accounting if not told otherwise.
+	// For now, we'll use GlobalStats as it's the most reliable way to get what rclone is doing.
+	
+	stopStats := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				stats := accounting.GlobalStats()
+				log.Printf("[%s -> %s] Progress: %s", src, dst, stats.String())
+			case <-stopStats:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	if s.deleteDestination {
 		err = sync.Sync(ctx, dstFs, srcFs, false)
 	} else {
 		err = sync.CopyDir(ctx, dstFs, srcFs, false)
 	}
+	
+	close(stopStats)
 
 	if err != nil {
 		return fmt.Errorf("sync failed: %w", err)
