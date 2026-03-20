@@ -1,121 +1,95 @@
 # Docker Volume Sync
 
-A sidecar container to synchronize a local Docker volume with any remote storage provider supported by `rclone` (AWS S3, Google Drive, Backblaze B2, Azure, etc.). It restores the volume from the remote on startup and schedules backups. It optionally stops containers attached to the volume before backup to ensure data integrity. This is particularly useful for volumes containing database data. 
+A single container service to synchronize multiple Docker volumes with any remote storage provider supported by `rclone` (AWS S3, Google Drive, Backblaze B2, Azure, etc.). It discovers volumes to back up via Docker labels, restores them on startup, and schedules periodic backups.
 
 ## Features
 
-- **Universal Support**: Uses `rclone` under the hood to support multiple backend storages.
-- **Restore**: On startup it downloads the remote content to the volume.
-- **Backup**: Periodically syncs the volume content to the remote.
-- **Safe Backups**: Temporarily stops containers attached to the volume during backup to ensure data integrity.
-- **Concurrent Transfers**: Uses multiple concurrent workers for faster uploads and downloads.
-- **Pruning**: Optionnally delete files in the destination that are no longer present in the source.
-- **Cron Scheduling**: Flexible backup scheduling using cron expressions.
+- **Single Container**: One `volumesync` container can manage multiple volumes across different services.
+- **Label-based Discovery**: Enable backup and configure schedules via Docker labels on your application containers.
+- **Universal Support**: Uses `rclone` under the hood to support 50+ backend storages.
+- **Safe Backups**: Optionally stops containers attached to the volume during backup to ensure data integrity.
+- **Internal Healthcheck**: The service is only marked healthy once ALL discovered volumes have completed their initial sync.
 
-## Configuration via environment variables
+## Configuration
+
+### Global Environment Variables (on `volumesync` container)
 
 | Variable | Description | Default | Required |
 | :--- | :--- | :--- | :--- |
-| `DESTINATION_PATH` | The destination URI according to rclone syntax (e.g., `s3://my-bucket/backups/data`, `drive:DatabaseBackup`). | - | **Yes** |
-| `SYNC_SCHEDULE` | Cron expression for the backup schedule (e.g., `@daily`, `0 3 * * *`). | - | **Yes** |
-| `VOLUME_PATH` | The path inside the container where the volume is mounted. | `/data` | No |
-| `VOLUME_NAME` | The name of the Docker volume to manage. If set, containers attached to this volume will be stopped during backup. | - | No |
-| `DOCKER_STOP_GRACE_PERIOD` | Human-readable duration to wait when stopping containers (e.g., `30s`, `1m`). | `2m` | No |
-| `SYNC_DELETE` | If set to `true`, files deleted in the volume will be deleted from the remote during backup (and vice-versa during restore). | `false` | No |
-| `SYNC_CONCURRENCY` | Number of concurrent file transfers. | `16` | No |
+| `DESTINATION_PATH` | The destination URI according to rclone syntax (e.g., `s3://my-bucket/backups`). | - | **Yes** |
 
-*Note: You must provide rclone credentials for your `DESTINATION_PATH` via standard rclone environment variables (e.g., `RCLONE_CONFIG_MYREMOTE_TYPE=s3` or standard AWS/GCP auth methods).*
+*Note: You must also provide rclone credentials for your `DESTINATION_PATH` via standard rclone environment variables (e.g., `RCLONE_CONFIG_MYREMOTE_TYPE=s3`).*
+
+### Docker Labels (on application containers)
+
+| Label | Description | Required | Default |
+|:---|:---|:---|:---|
+| `volumesync.enabled` | Set to `true` to enable backup for this container's volume. | **Yes** | - |
+| `volumesync.volume` | The Docker volume name to back up. | **Yes** | - |
+| `volumesync.schedule` | Cron expression for the backup schedule (e.g., `0 3 * * *`). | **Yes** | - |
+| `volumesync.delete` | If `true`, delete files in destination not present in source. | No | `false` |
+| `volumesync.concurrency` | Number of concurrent file transfers. | No | `16` |
+| `volumesync.stop` | Whether to stop this container during backup. | No | `true` |
+| `volumesync.stop_grace_period` | Grace period when stopping (e.g., `30s`, `1m`). | No | `30s` |
+| `volumesync.subpath` | Subdirectory under `DESTINATION_PATH` for this volume. | No | `volumesync.volume` |
 
 ## Usage
 
 ### Docker Compose Example
 
-Add `volumesync` as a service in your `docker-compose.yml`. Ensure it mounts the same volume as your application and has access to the Docker socket if you want it to stop/start containers.
+Mount every volume you want to back up under `/volumes/<name>` in the `volumesync` container. Applications that depend on the restored data should use `depends_on: volumesync: condition: service_healthy`.
 
 ```yaml
 services:
-  # Your main application
-  db:
-    image: postgres:13
-    volumes:
-      - db_data:/var/lib/postgresql/data
-    restart: always
-    depends_on:
-      backup:
-        condition: service_healthy
-
-  # The sidecar sync service
-  backup:
+  # The single sync service
+  volumesync:
     image: ghcr.io/dedalusj/docker-volume-sync:latest
     environment:
-      - DESTINATION_PATH=s3://my-backup-bucket/postgres
-      - SYNC_SCHEDULE=0 3 * * *  # Run at 3 AM daily
-      - VOLUME_NAME=db_data
-      - VOLUME_PATH=/data
-      - DOCKER_STOP_GRACE_PERIOD=30s
-      - SYNC_DELETE=true
-      # Provide relevant rclone backend configs
+      - DESTINATION_PATH=s3://my-backup-bucket
+      # Provide rclone backend configs
       - AWS_REGION=us-west-2
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock # Required to stop/start containers
-      - db_data:/data # Mount the shared volume to /data (default VOLUME_PATH)
+      - /var/run/docker.sock:/var/run/docker.sock
+      - db_data:/volumes/db_data
+      - app_data:/volumes/app_data
     healthcheck:
       test: ["CMD", "/app/volumesync", "health"]
       interval: 10s
       retries: 30
-      start_period: 10s
+
+  # An application with backup enabled
+  db:
+    image: postgres:13
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    labels:
+      - volumesync.enabled=true
+      - volumesync.volume=db_data
+      - volumesync.schedule=0 3 * * *
+      - volumesync.delete=true
+    depends_on:
+      volumesync:
+        condition: service_healthy
+
+  # Another application
+  app:
+    image: nginx:alpine
+    volumes:
+      - app_data:/usr/share/nginx/html
+    labels:
+      - volumesync.enabled=true
+      - volumesync.volume=app_data
+      - volumesync.schedule=@hourly
+      - volumesync.stop=false # Don't stop nginx during backup
+    depends_on:
+      volumesync:
+        condition: service_healthy
 
 volumes:
   db_data:
     name: db_data
-```
-
-### Google Drive Example
-
-To sync to a Google Drive folder, you can configure an `rclone` remote using environment variables. The easiest way for automated backups is to use a Google Service Account. Ensure you have the Google Drive API enabled in your Google Cloud Console.
-
-```yaml
-services:
-  # Your main application
-  app:
-    image: your-app-image:latest
-    volumes:
-      - app_data:/app/data
-    restart: always
-    depends_on:
-      backup:
-        condition: service_healthy
-
-  # The sidecar sync service
-  backup:
-    image: ghcr.io/dedalusj/docker-volume-sync:latest
-    environment:
-      # Use an rclone remote named 'gdrive' pointing to a specific folder
-      - DESTINATION_PATH=gdrive:my-backup-folder
-      - SYNC_SCHEDULE=0 3 * * *
-      - VOLUME_NAME=app_data
-      - VOLUME_PATH=/data
-      
-      # Configure the 'gdrive' remote inline
-      - RCLONE_CONFIG_GDRIVE_TYPE=drive
-      - RCLONE_CONFIG_GDRIVE_SCOPE=drive
-      # Provide the contents of your Google Service Account JSON file
-      - RCLONE_CONFIG_GDRIVE_SERVICE_ACCOUNT_CREDENTIALS=${GDRIVE_CREDENTIALS_JSON}
-      
-      # Alternatively, if using a standard Google account OAuth token, you can provide the token JSON:
-      # - RCLONE_CONFIG_GDRIVE_TOKEN=${GDRIVE_OAUTH_TOKEN_JSON}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - app_data:/data
-    healthcheck:
-      test: ["CMD", "/app/volumesync", "health"]
-      interval: 10s
-      retries: 30
-      start_period: 10s
-
-volumes:
   app_data:
     name: app_data
 ```

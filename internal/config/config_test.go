@@ -9,106 +9,126 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoad(t *testing.T) {
+func TestLoadGlobal(t *testing.T) {
 	tests := []struct {
 		name    string
 		env     map[string]string
-		want    *Config
+		want    *GlobalConfig
 		wantErr bool
 	}{
 		{
-			name: "SuccessDefaults",
+			name: "Success",
 			env: map[string]string{
-				"DESTINATION_PATH":       "s3://my-bucket/path",
-				"SYNC_SCHEDULE": "@every 5m",
+				"DESTINATION_PATH": "s3://my-bucket/path",
 			},
-			want: &Config{
-				DestinationPath:                "s3://my-bucket/path",
-				SyncSchedule:          "@every 5m",
-				VolumePath:            "/data",
-				DockerStopGracePeriod: 2 * time.Minute,
-				Concurrency:           16,
-				DeleteDestination:     false,
+			want: &GlobalConfig{
+				DestinationPath: "s3://my-bucket/path",
 			},
 			wantErr: false,
 		},
 		{
-			name: "SuccessFull",
-			env: map[string]string{
-				"DESTINATION_PATH":                  "s3://other-bucket",
-				"VOLUME_NAME":              "my-vol",
-				"VOLUME_PATH":              "/app/data",
-				"SYNC_SCHEDULE":            "0 0 * * *",
-				"DOCKER_STOP_GRACE_PERIOD": "30s",
-				"SYNC_DELETE":              "true",
-				"SYNC_CONCURRENCY":         "4",
-			},
-			want: &Config{
-				DestinationPath:                "s3://other-bucket",
-				VolumeName:            "my-vol",
-				VolumePath:            "/app/data",
-				SyncSchedule:          "0 0 * * *",
-				DockerStopGracePeriod: 30 * time.Second,
-				DeleteDestination:     true,
-				Concurrency:           4,
-			},
-			wantErr: false,
-		},
-		{
-			name: "MissingDestinationPath",
-			env: map[string]string{
-				"SYNC_SCHEDULE": "@every 1m",
-			},
+			name:    "MissingDestinationPath",
+			env:     map[string]string{},
 			want:    nil,
 			wantErr: true,
-		},
-		{
-			name: "MissingSyncSchedule",
-			env: map[string]string{
-				"DESTINATION_PATH": "s3://bucket",
-			},
-			want:    nil,
-			wantErr: true,
-		},
-		{
-			name: "InvalidGracePeriod",
-			env: map[string]string{
-				"DESTINATION_PATH":                  "s3://bucket",
-				"SYNC_SCHEDULE":            "@every 1m",
-				"DOCKER_STOP_GRACE_PERIOD": "invalid",
-			},
-			want:    nil,
-			wantErr: true,
-		},
-		{
-			name: "InvalidConcurrency",
-			env: map[string]string{
-				"DESTINATION_PATH":          "s3://bucket",
-				"SYNC_SCHEDULE":    "@every 1m",
-				"SYNC_CONCURRENCY": "not-a-number",
-			},
-			// Expect defaults for concurrency if invalid
-			want: &Config{
-				DestinationPath:                "s3://bucket",
-				SyncSchedule:          "@every 1m",
-				VolumePath:            "/data",
-				DockerStopGracePeriod: 2 * time.Minute,
-				Concurrency:           16,
-			},
-			wantErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clear env before each test
 			os.Clearenv()
-
 			for k, v := range tt.env {
 				t.Setenv(k, v)
 			}
 
-			got, err := Load()
+			got, err := LoadGlobal()
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestParseLabels(t *testing.T) {
+	tests := []struct {
+		name    string
+		labels  map[string]string
+		want    *VolumeJob
+		wantErr bool
+	}{
+		{
+			name: "SuccessFull",
+			labels: map[string]string{
+				"volumesync.enabled":           "true",
+				"volumesync.volume":            "my-vol",
+				"volumesync.schedule":          "0 0 * * *",
+				"volumesync.delete":            "true",
+				"volumesync.concurrency":       "4",
+				"volumesync.stop_grace_period": "1m",
+				"volumesync.subpath":           "custom/path",
+			},
+			want: &VolumeJob{
+				VolumeName:      "my-vol",
+				Schedule:        "0 0 * * *",
+				Delete:          true,
+				Concurrency:     4,
+				StopContainer:   true,
+				StopGracePeriod: time.Minute,
+				SubPath:         "custom/path",
+			},
+			wantErr: false,
+		},
+		{
+			name: "Defaults",
+			labels: map[string]string{
+				"volumesync.enabled":  "true",
+				"volumesync.volume":   "my-vol",
+				"volumesync.schedule": "@daily",
+			},
+			want: &VolumeJob{
+				VolumeName:      "my-vol",
+				Schedule:        "@daily",
+				Delete:          false,
+				Concurrency:     16,
+				StopContainer:   true,
+				StopGracePeriod: 30 * time.Second,
+				SubPath:         "my-vol",
+			},
+			wantErr: false,
+		},
+		{
+			name: "NotEnabled",
+			labels: map[string]string{
+				"volumesync.enabled": "false",
+			},
+			wantErr: true,
+		},
+		{
+			name: "MissingVolume",
+			labels: map[string]string{
+				"volumesync.enabled":  "true",
+				"volumesync.schedule": "@daily",
+			},
+			wantErr: true,
+		},
+		{
+			name: "InvalidGracePeriod",
+			labels: map[string]string{
+				"volumesync.enabled":           "true",
+				"volumesync.volume":            "vol",
+				"volumesync.schedule":          "@daily",
+				"volumesync.stop_grace_period": "invalid",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseLabels(tt.labels)
 			if tt.wantErr {
 				assert.Error(t, err)
 				return

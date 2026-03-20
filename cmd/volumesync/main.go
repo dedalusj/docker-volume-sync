@@ -20,29 +20,25 @@ import (
 
 const (
 	sentinelFilename = ".volumesync_done"
+	readyMarkerPath  = "/tmp/volumesync_ready"
+	volumesBaseDir   = "/volumes"
 )
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "health" {
-		cfg, err := config.Load()
-		if err != nil {
-			fmt.Printf("Healthcheck failed to load config: %v\n", err)
-			os.Exit(1)
-		}
-		sentinelPath := filepath.Join(cfg.VolumePath, sentinelFilename)
-		if _, err := os.Stat(sentinelPath); err == nil {
-			fmt.Println("Healthy: initial sync completed")
+		if _, err := os.Stat(readyMarkerPath); err == nil {
+			fmt.Println("Healthy: initial sync completed for all volumes")
 			os.Exit(0)
 		}
 		fmt.Println("Unhealthy: initial sync not completed")
 		os.Exit(1)
 	}
 
-	log.Println("Starting Docker Volume Sync...")
+	log.Println("Starting Docker Volume Sync (Single-Container Mode)...")
 
-	cfg, err := config.Load()
+	globalCfg, err := config.LoadGlobal()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatalf("Failed to load global config: %v", err)
 	}
 
 	mgr, err := dockermanager.New()
@@ -53,31 +49,56 @@ func main() {
 
 	ctx := context.Background()
 
-	f := filter.Opt
-	f.MinAge = fs.DurationOff
-	f.MaxAge = fs.DurationOff
-	f.FilterRule = []string{"- " + sentinelFilename}
-
-	remoteSyncer, err := syncer.New(ctx,
-		syncer.WithConcurrency(cfg.Concurrency),
-		syncer.WithDelete(cfg.DeleteDestination),
-		syncer.WithFilterOpt(f),
-	)
+	jobs, err := mgr.DiscoverJobs(ctx)
 	if err != nil {
-		log.Fatalf("Failed to create syncer: %v", err)
+		log.Fatalf("Failed to discover jobs: %v", err)
 	}
 
-	initialSync(ctx, cfg, remoteSyncer)
+	if len(jobs) == 0 {
+		log.Println("No volume jobs discovered. Waiting for signals...")
+	} else {
+		log.Printf("Discovered %d volume jobs.", len(jobs))
+	}
 
-	// Schedule Backup
 	c := cron.New()
-	_, err = c.AddFunc(cfg.SyncSchedule, sync(ctx, cfg, mgr, remoteSyncer))
-	if err != nil {
-		log.Fatalf("Failed to schedule job: %v", err)
+
+	for _, job := range jobs {
+		job := job // capture loop var
+		volumePath := filepath.Join(volumesBaseDir, job.VolumeName)
+		remotePath := filepath.Join(globalCfg.DestinationPath, job.SubPath)
+
+		// Create syncer for this job
+		f := filter.Opt
+		f.MinAge = fs.DurationOff
+		f.MaxAge = fs.DurationOff
+		f.FilterRule = []string{"- " + sentinelFilename}
+
+		s, err := syncer.New(ctx,
+			syncer.WithConcurrency(job.Concurrency),
+			syncer.WithDelete(job.Delete),
+			syncer.WithFilterOpt(f),
+		)
+		if err != nil {
+			log.Fatalf("Failed to create syncer for %s: %v", job.VolumeName, err)
+		}
+
+		// 1. Initial Sync
+		initialSync(ctx, volumePath, remotePath, s)
+
+		// 2. Schedule Backup
+		_, err = c.AddFunc(job.Schedule, syncJob(ctx, job, volumePath, remotePath, mgr, s))
+		if err != nil {
+			log.Fatalf("Failed to schedule job for %s: %v", job.VolumeName, err)
+		}
+		log.Printf("Scheduled backup for %s: %s", job.VolumeName, job.Schedule)
+	}
+
+	// All initial syncs done
+	if err := os.WriteFile(readyMarkerPath, []byte(time.Now().String()), 0644); err != nil {
+		log.Printf("Warning: failed to create ready marker: %v", err)
 	}
 
 	c.Start()
-	log.Printf("Scheduler started with schedule: %s", cfg.SyncSchedule)
 
 	// Wait for signal
 	sigChan := make(chan os.Signal, 1)
@@ -86,76 +107,51 @@ func main() {
 
 	log.Println("Shutting down...")
 	c.Stop()
+	_ = os.Remove(readyMarkerPath)
 }
 
-func initialSync(ctx context.Context, cfg *config.Config, remoteSyncer *syncer.Syncer) {
-	sentinelPath := filepath.Join(cfg.VolumePath, sentinelFilename)
+func initialSync(ctx context.Context, localPath, remotePath string, s *syncer.Syncer) {
+	sentinelPath := filepath.Join(localPath, sentinelFilename)
 	if _, err := os.Stat(sentinelPath); os.IsNotExist(err) {
-		log.Println("Sentinel file not found. Starting INITIAL SYNC (Destination -> Volume)...")
-		if err := remoteSyncer.Sync(ctx, cfg.DestinationPath, cfg.VolumePath); err != nil {
-			log.Fatalf("Initial sync failed: %v", err)
+		log.Printf("[%s] Sentinel file not found. Starting INITIAL SYNC (Remote -> Local)...", filepath.Base(localPath))
+		if err := s.Sync(ctx, remotePath, localPath); err != nil {
+			log.Fatalf("Initial sync failed for %s: %v", localPath, err)
 		}
-		log.Println("Initial sync completed.")
+		log.Printf("[%s] Initial sync completed.", filepath.Base(localPath))
 		if err := os.WriteFile(sentinelPath, []byte(time.Now().String()), 0644); err != nil {
-			log.Fatalf("Failed to create sentinel file: %v", err)
+			log.Fatalf("Failed to create sentinel file for %s: %v", localPath, err)
 		}
 	} else {
-		log.Println("Sentinel file found. Skipping initial sync.")
+		log.Printf("[%s] Sentinel file found. Skipping initial sync.", filepath.Base(localPath))
 	}
 }
 
-func sync(ctx context.Context, cfg *config.Config, mgr *dockermanager.Manager, remoteSyncer *syncer.Syncer) func() {
+func syncJob(ctx context.Context, job config.VolumeJob, localPath, remotePath string, mgr *dockermanager.Manager, s *syncer.Syncer) func() {
 	return func() {
-		log.Println("Starting scheduled backup (Volume -> Destination)...")
+		log.Printf("[%s] Starting scheduled backup...", job.VolumeName)
 
-		stopped, stopErr := stopContainers(ctx, cfg, mgr)
-		if stopErr != nil {
-			log.Printf("Error stopping containers: %v", stopErr)
-		}
+		var stopped []string
+		var stopErr error
 
-		if stopErr == nil {
-			if syncErr := syncVolume(ctx, cfg, remoteSyncer); syncErr != nil {
-				log.Printf("Error syncing volume: %v", syncErr)
+		if job.StopContainer {
+			stopped, stopErr = mgr.StopContainers(ctx, job.ContainerIDs, job.StopGracePeriod)
+			if stopErr != nil {
+				log.Printf("[%s] Error stopping containers: %v", job.VolumeName, stopErr)
 			}
 		}
 
-		if restartErr := restartContainers(ctx, mgr, stopped); restartErr != nil {
-			log.Printf("Error restarting containers: %v", restartErr)
+		if stopErr == nil {
+			if err := s.Sync(ctx, localPath, remotePath); err != nil {
+				log.Printf("[%s] Error syncing volume: %v", job.VolumeName, err)
+			} else {
+				log.Printf("[%s] Backup completed successfully.", job.VolumeName)
+			}
+		}
+
+		if job.StopContainer && len(stopped) > 0 {
+			if err := mgr.StartContainers(ctx, stopped); err != nil {
+				log.Printf("[%s] Error restarting containers: %v", job.VolumeName, err)
+			}
 		}
 	}
-}
-
-func stopContainers(ctx context.Context, cfg *config.Config, mgr *dockermanager.Manager) (stopped []string, err error) {
-	// Stop containers if VolumeName is set
-	if cfg.VolumeName != "" {
-		stopped, err = mgr.StopContainersAttachedToVolume(ctx, cfg.VolumeName, cfg.DockerStopGracePeriod)
-		if err != nil {
-			return nil, fmt.Errorf("stopping containers: %v", err)
-		}
-		if len(stopped) > 0 {
-			log.Printf("Stopped %d containers.", len(stopped))
-		}
-	} else {
-		log.Println("VOLUME_NAME not set. Skipping container stop.")
-	}
-	return stopped, nil
-}
-
-func syncVolume(ctx context.Context, cfg *config.Config, remoteSyncer *syncer.Syncer) error {
-	if err := remoteSyncer.Sync(ctx, cfg.VolumePath, cfg.DestinationPath); err != nil {
-		return fmt.Errorf("syncing volume: %v", err)
-	}
-	log.Println("Backup completed successfully.")
-	return nil
-}
-
-func restartContainers(ctx context.Context, mgr *dockermanager.Manager, stopped []string) error {
-	if len(stopped) == 0 {
-		return nil
-	}
-	if err := mgr.StartContainers(ctx, stopped); err != nil {
-		return fmt.Errorf("starting containers: %v", err)
-	}
-	log.Printf("Started %d containers.", len(stopped))
-	return nil
 }
