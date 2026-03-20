@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -20,17 +21,32 @@ import (
 
 const (
 	sentinelFilename = ".volumesync_done"
-	readyMarkerPath  = "/tmp/volumesync_ready"
+	readyVolsDir     = "/tmp/volumesync_vols"
 	volumesBaseDir   = "/volumes"
 )
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "health" {
-		if _, err := os.Stat(readyMarkerPath); err == nil {
-			fmt.Println("Healthy: initial sync completed for all volumes")
+		expected := 1
+		if len(os.Args) > 2 {
+			if val, err := strconv.Atoi(os.Args[2]); err == nil {
+				expected = val
+			}
+		}
+
+		entries, _ := os.ReadDir(readyVolsDir)
+		syncedCount := 0
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				syncedCount++
+			}
+		}
+
+		if syncedCount >= expected {
+			fmt.Printf("Healthy: %d volumes synced (expected at least %d)\n", syncedCount, expected)
 			os.Exit(0)
 		}
-		fmt.Println("Unhealthy: initial sync not completed")
+		fmt.Printf("Unhealthy: only %d volumes synced (expected %d)\n", syncedCount, expected)
 		os.Exit(1)
 	}
 
@@ -49,20 +65,53 @@ func main() {
 
 	ctx := context.Background()
 
-	jobs, err := mgr.DiscoverJobs(ctx)
-	if err != nil {
-		log.Fatalf("Failed to discover jobs: %v", err)
-	}
-
-	if len(jobs) == 0 {
-		log.Println("No volume jobs discovered. Waiting for signals...")
-	} else {
-		log.Printf("Discovered %d volume jobs.", len(jobs))
-	}
+	_ = os.MkdirAll(readyVolsDir, 0755)
 
 	c := cron.New()
+	c.Start()
+
+	scheduledJobs := make(map[string]bool)
+
+	// Single discovery run on startup
+	processJobs(ctx, globalCfg, mgr, c, scheduledJobs)
+
+	// Periodic discovery in background
+	ticker := time.NewTicker(30 * time.Second)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				processJobs(ctx, globalCfg, mgr, c, scheduledJobs)
+			}
+		}
+	}()
+
+	// Wait for signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	log.Println("Shutting down...")
+	ticker.Stop() // Not strictly needed as the ticker will be stopped by ctx.Done() above but good practice
+	c.Stop()
+	_ = os.RemoveAll(readyVolsDir)
+}
+
+func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *dockermanager.Manager, c *cron.Cron, scheduledJobs map[string]bool) {
+	jobs, err := mgr.DiscoverJobs(ctx)
+	if err != nil {
+		log.Printf("Error discovering jobs: %v", err)
+		return
+	}
 
 	for _, job := range jobs {
+		if scheduledJobs[job.VolumeName] {
+			continue
+		}
+
 		job := job // capture loop var
 		volumePath := filepath.Join(volumesBaseDir, job.VolumeName)
 		remotePath := filepath.Join(globalCfg.DestinationPath, job.SubPath)
@@ -79,35 +128,29 @@ func main() {
 			syncer.WithFilterOpt(f),
 		)
 		if err != nil {
-			log.Fatalf("Failed to create syncer for %s: %v", job.VolumeName, err)
+			log.Printf("Failed to create syncer for %s: %v", job.VolumeName, err)
+			continue
 		}
 
-		// 1. Initial Sync
+		// 1. Initial Sync (Restore)
 		initialSync(ctx, volumePath, remotePath, s)
 
-		// 2. Schedule Backup
+		// 2. Mark as ready (for healthcheck)
+		markerPath := filepath.Join(readyVolsDir, job.VolumeName)
+		if err := os.WriteFile(markerPath, []byte(time.Now().String()), 0644); err != nil {
+			log.Printf("Warning: failed to create ready marker for %s: %v", job.VolumeName, err)
+		}
+
+		// 3. Schedule Backup
 		_, err = c.AddFunc(job.Schedule, syncJob(ctx, job, volumePath, remotePath, mgr, s))
 		if err != nil {
-			log.Fatalf("Failed to schedule job for %s: %v", job.VolumeName, err)
+			log.Printf("Failed to schedule job for %s: %v", job.VolumeName, err)
+			continue
 		}
 		log.Printf("Scheduled backup for %s: %s", job.VolumeName, job.Schedule)
+
+		scheduledJobs[job.VolumeName] = true
 	}
-
-	// All initial syncs done
-	if err := os.WriteFile(readyMarkerPath, []byte(time.Now().String()), 0644); err != nil {
-		log.Printf("Warning: failed to create ready marker: %v", err)
-	}
-
-	c.Start()
-
-	// Wait for signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	log.Println("Shutting down...")
-	c.Stop()
-	_ = os.Remove(readyMarkerPath)
 }
 
 func initialSync(ctx context.Context, localPath, remotePath string, s *syncer.Syncer) {

@@ -76,7 +76,7 @@ func TestDiscoverJobs(t *testing.T) {
 			},
 		}
 
-		mockClient.On("ContainerList", ctx, client.ContainerListOptions{}).Return(client.ContainerListResult{Items: containers}, nil)
+		mockClient.On("ContainerList", ctx, client.ContainerListOptions{All: true}).Return(client.ContainerListResult{Items: containers}, nil)
 
 		jobs, err := mgr.DiscoverJobs(ctx)
 		assert.NoError(t, err)

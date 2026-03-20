@@ -36,7 +36,7 @@ func (m *Manager) Close() error {
 
 // DiscoverJobs finds all containers with volumesync labels and groups them into jobs.
 func (m *Manager) DiscoverJobs(ctx context.Context) ([]config.VolumeJob, error) {
-	res, err := m.client.ContainerList(ctx, dockerClient.ContainerListOptions{})
+	res, err := m.client.ContainerList(ctx, dockerClient.ContainerListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}

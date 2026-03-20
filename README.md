@@ -8,7 +8,8 @@ A single container service to synchronize multiple Docker volumes with any remot
 - **Label-based Discovery**: Enable backup and configure schedules via Docker labels on your application containers.
 - **Universal Support**: Uses `rclone` under the hood to support 50+ backend storages.
 - **Safe Backups**: Optionally stops containers attached to the volume during backup to ensure data integrity.
-- **Internal Healthcheck**: The service is only marked healthy once ALL discovered volumes have completed their initial sync.
+- **Robust Healthcheck**: The service can be configured to only mark itself healthy once a specific number of volumes have been discovered and restored. This avoids race conditions in `docker-compose`.
+- **Dynamic Discovery**: Automatically discovers and schedules backups for new containers added after `volumesync` has started.
 
 ## Configuration
 
@@ -55,7 +56,8 @@ services:
       - db_data:/volumes/db_data
       - app_data:/volumes/app_data
     healthcheck:
-      test: ["CMD", "/app/volumesync", "health"]
+      # Expect at least 2 volumes to be restored (db_data and app_data)
+      test: ["CMD", "/app/volumesync", "health", "2"]
       interval: 10s
       retries: 30
 
