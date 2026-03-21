@@ -35,63 +35,78 @@ func LoadGlobal() (*GlobalConfig, error) {
 	}, nil
 }
 
+const (
+	labelPrefix = "volumesync"
+
+	enabledLabel         = labelPrefix + ".enabled"
+	volumeLabel          = labelPrefix + ".volume"
+	scheduleLabel        = labelPrefix + ".schedule"
+	deleteLabel          = labelPrefix + ".delete"
+	concurrencyLabel     = labelPrefix + ".concurrency"
+	stopLabel            = labelPrefix + ".stop"
+	stopGracePeriodLabel = labelPrefix + ".stop_grace_period"
+	subPathLabel         = labelPrefix + ".subpath"
+	uidLabel             = labelPrefix + ".uid"
+	gidLabel             = labelPrefix + ".gid"
+)
+
 func ParseLabels(labels map[string]string) (*VolumeJob, error) {
-	if labels["volumesync.enabled"] != "true" {
-		return nil, fmt.Errorf("volumesync.enabled is not true")
+	if labels[enabledLabel] != "true" {
+		return nil, nil
 	}
 
-	volume := labels["volumesync.volume"]
+	volume := labels[volumeLabel]
 	if volume == "" {
-		return nil, fmt.Errorf("volumesync.volume is required")
+		return nil, fmt.Errorf("%s is required", volumeLabel)
 	}
 
-	schedule := labels["volumesync.schedule"]
+	schedule := labels[scheduleLabel]
 	if schedule == "" {
-		return nil, fmt.Errorf("volumesync.schedule is required")
+		return nil, fmt.Errorf("%s is required", scheduleLabel)
 	}
 
 	job := &VolumeJob{
 		VolumeName:    volume,
 		Schedule:      schedule,
-		Delete:        labels["volumesync.delete"] == "true",
+		Delete:        labels[deleteLabel] == "true",
 		Concurrency:   16,
 		StopContainer: true,
 		SubPath:       volume,
 	}
 
-	if labels["volumesync.stop"] == "false" {
+	if labels[stopLabel] == "false" {
 		job.StopContainer = false
 	}
 
-	if grace := labels["volumesync.stop_grace_period"]; grace != "" {
+	if grace := labels[stopGracePeriodLabel]; grace != "" {
 		d, err := time.ParseDuration(grace)
 		if err != nil {
-			return nil, fmt.Errorf("invalid volumesync.stop_grace_period: %w", err)
+			return nil, fmt.Errorf("invalid %s: %w", stopGracePeriodLabel, err)
 		}
 		job.StopGracePeriod = d
 	} else {
 		job.StopGracePeriod = 30 * time.Second
 	}
 
-	if cStr := labels["volumesync.concurrency"]; cStr != "" {
+	if cStr := labels[concurrencyLabel]; cStr != "" {
 		c, err := strconv.Atoi(cStr)
 		if err == nil && c > 0 {
 			job.Concurrency = c
 		}
 	}
 
-	if sub := labels["volumesync.subpath"]; sub != "" {
+	if sub := labels[subPathLabel]; sub != "" {
 		job.SubPath = sub
 	}
-	
-	if uidStr := labels["volumesync.uid"]; uidStr != "" {
+
+	if uidStr := labels[uidLabel]; uidStr != "" {
 		uid, err := strconv.Atoi(uidStr)
 		if err == nil {
 			job.UID = &uid
 		}
 	}
-	
-	if gidStr := labels["volumesync.gid"]; gidStr != "" {
+
+	if gidStr := labels[gidLabel]; gidStr != "" {
 		gid, err := strconv.Atoi(gidStr)
 		if err == nil {
 			job.GID = &gid

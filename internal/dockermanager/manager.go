@@ -45,13 +45,12 @@ func (m *Manager) DiscoverJobs(ctx context.Context) ([]config.VolumeJob, error) 
 	jobsMap := make(map[string]*config.VolumeJob)
 
 	for _, c := range containers {
-		if c.Labels["volumesync.enabled"] != "true" {
-			continue
-		}
-
 		job, err := config.ParseLabels(c.Labels)
 		if err != nil {
 			log.Printf("Warning: failed to parse labels for container %s: %v", c.ID, err)
+			continue
+		}
+		if job == nil {
 			continue
 		}
 

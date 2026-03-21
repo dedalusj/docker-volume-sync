@@ -110,7 +110,7 @@ func TestParseLabels(t *testing.T) {
 			labels: map[string]string{
 				"volumesync.enabled": "false",
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "MissingVolume",

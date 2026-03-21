@@ -27,30 +27,10 @@ const (
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "health" {
-		expected := 1
-		if len(os.Args) > 2 {
-			if val, err := strconv.Atoi(os.Args[2]); err == nil {
-				expected = val
-			}
-		}
-
-		entries, _ := os.ReadDir(readyVolsDir)
-		syncedCount := 0
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				syncedCount++
-			}
-		}
-
-		if syncedCount >= expected {
-			fmt.Printf("Healthy: %d volumes synced (expected at least %d)\n", syncedCount, expected)
-			os.Exit(0)
-		}
-		fmt.Printf("Unhealthy: only %d volumes synced (expected %d)\n", syncedCount, expected)
-		os.Exit(1)
+		healthCheck()
 	}
 
-	log.Println("Starting Docker Volume Sync (Single-Container Mode)...")
+	log.Println("Starting Docker Volume Sync...")
 
 	globalCfg, err := config.LoadGlobal()
 	if err != nil {
@@ -67,7 +47,18 @@ func main() {
 
 	_ = os.MkdirAll(readyVolsDir, 0755)
 
-	c := cron.New()
+	// Determine time zone for the cron scheduler
+	var cronOpts []cron.Option
+	if tz := os.Getenv("TZ"); tz != "" {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			log.Printf("Warning: failed to load timezone %s: %v. Using local time.", tz, err)
+		} else {
+			cronOpts = append(cronOpts, cron.WithLocation(loc))
+		}
+	}
+
+	c := cron.New(cronOpts...)
 	c.Start()
 
 	scheduledJobs := make(map[string]bool)
@@ -75,7 +66,7 @@ func main() {
 	// Single discovery run on startup
 	processJobs(ctx, globalCfg, mgr, c, scheduledJobs)
 
-	// Periodic discovery in background
+	// Periodic discovery in the background
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
 		for {
@@ -89,7 +80,7 @@ func main() {
 		}
 	}()
 
-	// Wait for signal
+	// Wait for a stop signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
@@ -98,6 +89,30 @@ func main() {
 	ticker.Stop() // Not strictly needed as the ticker will be stopped by ctx.Done() above but good practice
 	c.Stop()
 	_ = os.RemoveAll(readyVolsDir)
+}
+
+func healthCheck() {
+	expected := 1
+	if len(os.Args) > 2 {
+		if val, err := strconv.Atoi(os.Args[2]); err == nil {
+			expected = val
+		}
+	}
+
+	entries, _ := os.ReadDir(readyVolsDir)
+	syncedCount := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			syncedCount++
+		}
+	}
+
+	if syncedCount >= expected {
+		fmt.Printf("Healthy: %d volumes synced (expected at least %d)\n", syncedCount, expected)
+		os.Exit(0)
+	}
+	fmt.Printf("Unhealthy: only %d volumes synced (expected %d)\n", syncedCount, expected)
+	os.Exit(1)
 }
 
 func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *dockermanager.Manager, c *cron.Cron, scheduledJobs map[string]bool) {
@@ -112,11 +127,10 @@ func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *docke
 			continue
 		}
 
-		job := job // capture loop var
 		volumePath := filepath.Join(volumesBaseDir, job.VolumeName)
 		remotePath := syncer.JoinPath(globalCfg.DestinationPath, job.SubPath)
 
-		// Create syncer for this job
+		// Create a syncer for this job
 		f := filter.Opt
 		f.MinAge = fs.DurationOff
 		f.MaxAge = fs.DurationOff
@@ -135,7 +149,7 @@ func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *docke
 		// 1. Initial Sync (Restore)
 		initialSync(ctx, volumePath, remotePath, s, job.UID, job.GID)
 
-		// 2. Mark as ready (for healthcheck)
+		// 2. Mark as ready (for the health check)
 		markerPath := filepath.Join(readyVolsDir, job.VolumeName)
 		if err := os.WriteFile(markerPath, []byte(time.Now().String()), 0644); err != nil {
 			log.Printf("Warning: failed to create ready marker for %s: %v", job.VolumeName, err)
@@ -162,19 +176,9 @@ func initialSync(ctx context.Context, localPath, remotePath string, s *syncer.Sy
 		}
 		log.Printf("[%s] Initial sync completed.", filepath.Base(localPath))
 
-		// Apply UID/GID to folders if specified
 		if uid != nil || gid != nil {
-			u, g := -1, -1
-			if uid != nil {
-				u = *uid
-			}
-			if gid != nil {
-				g = *gid
-			}
-			log.Printf("[%s] Applying ownership %d:%d to folders...", filepath.Base(localPath), u, g)
-			if err := chownDirectories(localPath, u, g); err != nil {
-				log.Printf("Warning: failed to chown directories in %s: %v", localPath, err)
-			}
+			log.Printf("[%s] Applying ownership to folders...", filepath.Base(localPath))
+			chownDirectories(uid, gid, localPath)
 		}
 
 		if err := os.WriteFile(sentinelPath, []byte(time.Now().String()), 0644); err != nil {
@@ -185,16 +189,27 @@ func initialSync(ctx context.Context, localPath, remotePath string, s *syncer.Sy
 	}
 }
 
-func chownDirectories(path string, uid, gid int) error {
-	return filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+func chownDirectories(uid, gid *int, path string) {
+	if uid != nil || gid != nil {
+		u, g := -1, -1
+		if uid != nil {
+			u = *uid
 		}
-		if info.IsDir() {
-			return os.Chown(p, uid, gid)
+		if gid != nil {
+			g = *gid
 		}
-		return nil
-	})
+		if err := filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return os.Chown(p, u, g)
+			}
+			return nil
+		}); err != nil {
+			log.Printf("Warning: failed to chown directories in %s: %v", path, err)
+		}
+	}
 }
 
 func syncJob(ctx context.Context, job config.VolumeJob, localPath, remotePath string, mgr *dockermanager.Manager, s *syncer.Syncer) func() {
