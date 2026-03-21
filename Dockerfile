@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build -o volumesync ./cmd/volumesync
 FROM alpine:latest
 
 WORKDIR /app
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /app/volumesync .
 
