@@ -75,6 +75,7 @@ func (s *Syncer) Sync(ctx context.Context, src, dst string) error {
 	ci := fs.GetConfig(ctx)
 	ci.Transfers = s.concurrency
 	ci.Checkers = s.concurrency
+	ci.Metadata = true
 
 	ctx = filter.ReplaceConfig(ctx, fi)
 	

@@ -20,6 +20,8 @@ type VolumeJob struct {
 	StopGracePeriod time.Duration
 	SubPath         string
 	ContainerIDs    []string
+	UID             *int
+	GID             *int
 }
 
 func LoadGlobal() (*GlobalConfig, error) {
@@ -80,6 +82,20 @@ func ParseLabels(labels map[string]string) (*VolumeJob, error) {
 
 	if sub := labels["volumesync.subpath"]; sub != "" {
 		job.SubPath = sub
+	}
+	
+	if uidStr := labels["volumesync.uid"]; uidStr != "" {
+		uid, err := strconv.Atoi(uidStr)
+		if err == nil {
+			job.UID = &uid
+		}
+	}
+	
+	if gidStr := labels["volumesync.gid"]; gidStr != "" {
+		gid, err := strconv.Atoi(gidStr)
+		if err == nil {
+			job.GID = &gid
+		}
 	}
 
 	return job, nil

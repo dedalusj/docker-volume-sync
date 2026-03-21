@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func intPtr(i int) *int { return &i }
+
 func TestLoadGlobal(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -69,6 +71,8 @@ func TestParseLabels(t *testing.T) {
 				"volumesync.concurrency":       "4",
 				"volumesync.stop_grace_period": "1m",
 				"volumesync.subpath":           "custom/path",
+				"volumesync.uid":               "1000",
+				"volumesync.gid":               "1000",
 			},
 			want: &VolumeJob{
 				VolumeName:      "my-vol",
@@ -78,6 +82,8 @@ func TestParseLabels(t *testing.T) {
 				StopContainer:   true,
 				StopGracePeriod: time.Minute,
 				SubPath:         "custom/path",
+				UID:             intPtr(1000),
+				GID:             intPtr(1000),
 			},
 			wantErr: false,
 		},

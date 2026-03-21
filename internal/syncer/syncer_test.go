@@ -107,3 +107,39 @@ func TestSync_WithFilter(t *testing.T) {
 		require.True(t, os.IsNotExist(err), "File %s should not exist", file)
 	}
 }
+
+func TestSync_PreservePermissions(t *testing.T) {
+	// Skip on Windows if needed, but we are on Mac
+	tmpDir := t.TempDir()
+	srcDir := filepath.Join(tmpDir, "src")
+	dstDir := filepath.Join(tmpDir, "dst")
+
+	require.NoError(t, os.Mkdir(srcDir, 0755))
+	require.NoError(t, os.Mkdir(dstDir, 0755))
+
+	fileName := "perm_test.txt"
+	srcPath := filepath.Join(srcDir, fileName)
+	dstPath := filepath.Join(dstDir, fileName)
+
+	// Create file with specific permissions
+	// Using 0600 (read/write only for owner)
+	expectedMode := os.FileMode(0600)
+	require.NoError(t, os.WriteFile(srcPath, []byte("permission test"), expectedMode))
+	
+	// Double check src permissions (os.WriteFile might be affected by umask)
+	require.NoError(t, os.Chmod(srcPath, expectedMode))
+
+	s, err := New(context.Background())
+	require.NoError(t, err)
+
+	err = s.Sync(context.Background(), srcDir, dstDir)
+	require.NoError(t, err)
+
+	// Verify file is copied
+	info, err := os.Stat(dstPath)
+	require.NoError(t, err)
+	
+	// On some systems/filesystems, permissions might not be exactly preserved 
+	// or might have extra bits. We check the lower 9 bits.
+	require.Equal(t, expectedMode, info.Mode().Perm(), "Permissions should be preserved")
+}

@@ -133,7 +133,7 @@ func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *docke
 		}
 
 		// 1. Initial Sync (Restore)
-		initialSync(ctx, volumePath, remotePath, s)
+		initialSync(ctx, volumePath, remotePath, s, job.UID, job.GID)
 
 		// 2. Mark as ready (for healthcheck)
 		markerPath := filepath.Join(readyVolsDir, job.VolumeName)
@@ -153,7 +153,7 @@ func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *docke
 	}
 }
 
-func initialSync(ctx context.Context, localPath, remotePath string, s *syncer.Syncer) {
+func initialSync(ctx context.Context, localPath, remotePath string, s *syncer.Syncer, uid, gid *int) {
 	sentinelPath := filepath.Join(localPath, sentinelFilename)
 	if _, err := os.Stat(sentinelPath); os.IsNotExist(err) {
 		log.Printf("[%s] Sentinel file not found. Starting INITIAL SYNC (Remote -> Local)...", filepath.Base(localPath))
@@ -161,12 +161,40 @@ func initialSync(ctx context.Context, localPath, remotePath string, s *syncer.Sy
 			log.Fatalf("Initial sync failed for %s: %v", localPath, err)
 		}
 		log.Printf("[%s] Initial sync completed.", filepath.Base(localPath))
+
+		// Apply UID/GID to folders if specified
+		if uid != nil || gid != nil {
+			u, g := -1, -1
+			if uid != nil {
+				u = *uid
+			}
+			if gid != nil {
+				g = *gid
+			}
+			log.Printf("[%s] Applying ownership %d:%d to folders...", filepath.Base(localPath), u, g)
+			if err := chownDirectories(localPath, u, g); err != nil {
+				log.Printf("Warning: failed to chown directories in %s: %v", localPath, err)
+			}
+		}
+
 		if err := os.WriteFile(sentinelPath, []byte(time.Now().String()), 0644); err != nil {
 			log.Fatalf("Failed to create sentinel file for %s: %v", localPath, err)
 		}
 	} else {
 		log.Printf("[%s] Sentinel file found. Skipping initial sync.", filepath.Base(localPath))
 	}
+}
+
+func chownDirectories(path string, uid, gid int) error {
+	return filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.Chown(p, uid, gid)
+		}
+		return nil
+	})
 }
 
 func syncJob(ctx context.Context, job config.VolumeJob, localPath, remotePath string, mgr *dockermanager.Manager, s *syncer.Syncer) func() {

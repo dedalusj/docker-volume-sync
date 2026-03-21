@@ -33,6 +33,8 @@ A single container service to synchronize multiple Docker volumes with any remot
 | `volumesync.stop` | Whether to stop this container during backup. | No | `true` |
 | `volumesync.stop_grace_period` | Grace period when stopping (e.g., `30s`, `1m`). | No | `30s` |
 | `volumesync.subpath` | Subdirectory under `DESTINATION_PATH` for this volume. | No | `volumesync.volume` |
+| `volumesync.uid` | User ID to apply to folders during initial sync (restore). | No | - |
+| `volumesync.gid` | Group ID to apply to folders during initial sync (restore). | No | - |
 
 ## Usage
 
