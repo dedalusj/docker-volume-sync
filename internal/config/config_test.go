@@ -29,6 +29,30 @@ func TestLoadGlobal(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "SuccessWithTZ",
+			env: map[string]string{
+				"DESTINATION_PATH": "s3://my-bucket/path",
+				"TZ":               "UTC",
+			},
+			want: &GlobalConfig{
+				DestinationPath: "s3://my-bucket/path",
+				Location:        time.UTC,
+			},
+			wantErr: false,
+		},
+		{
+			name: "SuccessWithInvalidTZ",
+			env: map[string]string{
+				"DESTINATION_PATH": "s3://my-bucket/path",
+				"TZ":               "Invalid/Timezone",
+			},
+			want: &GlobalConfig{
+				DestinationPath: "s3://my-bucket/path",
+				Location:        time.Local,
+			},
+			wantErr: false,
+		},
+		{
 			name:    "MissingDestinationPath",
 			env:     map[string]string{},
 			want:    nil,
@@ -49,7 +73,12 @@ func TestLoadGlobal(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.want.DestinationPath, got.DestinationPath)
+			if tt.want.Location != nil {
+				assert.Equal(t, tt.want.Location.String(), got.Location.String())
+			} else {
+				assert.NotNil(t, got.Location)
+			}
 		})
 	}
 }

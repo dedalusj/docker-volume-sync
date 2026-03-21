@@ -9,6 +9,7 @@ import (
 
 type GlobalConfig struct {
 	DestinationPath string
+	Location        *time.Location
 }
 
 type VolumeJob struct {
@@ -30,8 +31,16 @@ func LoadGlobal() (*GlobalConfig, error) {
 		return nil, fmt.Errorf("DESTINATION_PATH environment variable is required")
 	}
 
+	loc := time.Local
+	if tz := os.Getenv("TZ"); tz != "" {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+
 	return &GlobalConfig{
 		DestinationPath: dest,
+		Location:        loc,
 	}, nil
 }
 

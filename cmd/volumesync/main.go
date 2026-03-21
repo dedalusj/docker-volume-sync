@@ -47,21 +47,10 @@ func main() {
 
 	_ = os.MkdirAll(readyVolsDir, 0755)
 
-	// Determine time zone for the cron scheduler
-	var cronOpts []cron.Option
-	if tz := os.Getenv("TZ"); tz != "" {
-		loc, err := time.LoadLocation(tz)
-		if err != nil {
-			log.Printf("Warning: failed to load timezone %s: %v. Using local time.", tz, err)
-		} else {
-			cronOpts = append(cronOpts, cron.WithLocation(loc))
-		}
-	}
-
-	c := cron.New(cronOpts...)
+	c := cron.New(cron.WithLocation(globalCfg.Location))
 	c.Start()
 
-	scheduledJobs := make(map[string]bool)
+	scheduledJobs := make(map[string]cron.EntryID)
 
 	// Single discovery run on startup
 	processJobs(ctx, globalCfg, mgr, c, scheduledJobs)
@@ -115,7 +104,7 @@ func healthCheck() {
 	os.Exit(1)
 }
 
-func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *dockermanager.Manager, c *cron.Cron, scheduledJobs map[string]bool) {
+func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *dockermanager.Manager, c *cron.Cron, scheduledJobs map[string]cron.EntryID) {
 	jobs, err := mgr.DiscoverJobs(ctx)
 	if err != nil {
 		log.Printf("Error discovering jobs: %v", err)
@@ -123,7 +112,7 @@ func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *docke
 	}
 
 	for _, job := range jobs {
-		if scheduledJobs[job.VolumeName] {
+		if _, exists := scheduledJobs[job.VolumeName]; exists {
 			continue
 		}
 
@@ -156,14 +145,21 @@ func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *docke
 		}
 
 		// 3. Schedule Backup
-		_, err = c.AddFunc(job.Schedule, syncJob(ctx, job, volumePath, remotePath, mgr, s))
+		onDone := func() {
+			entryID := scheduledJobs[job.VolumeName]
+			next := c.Entry(entryID).Next
+			log.Printf("[%s] Next scheduled backup: %s", job.VolumeName, next.Format(time.RFC3339))
+		}
+
+		entryID, err := c.AddFunc(job.Schedule, syncJob(ctx, job, volumePath, remotePath, mgr, s, onDone))
 		if err != nil {
 			log.Printf("Failed to schedule job for %s: %v", job.VolumeName, err)
 			continue
 		}
-		log.Printf("Scheduled backup for %s: %s", job.VolumeName, job.Schedule)
 
-		scheduledJobs[job.VolumeName] = true
+		scheduledJobs[job.VolumeName] = entryID
+
+		log.Printf("[%s] Scheduled backup (%s). Next run: %s", job.VolumeName, job.Schedule, c.Entry(entryID).Next.Format(time.RFC3339))
 	}
 }
 
@@ -212,7 +208,7 @@ func chownDirectories(uid, gid *int, path string) {
 	}
 }
 
-func syncJob(ctx context.Context, job config.VolumeJob, localPath, remotePath string, mgr *dockermanager.Manager, s *syncer.Syncer) func() {
+func syncJob(ctx context.Context, job config.VolumeJob, localPath, remotePath string, mgr *dockermanager.Manager, s *syncer.Syncer, onDone func()) func() {
 	return func() {
 		log.Printf("[%s] Starting scheduled backup...", job.VolumeName)
 
@@ -238,6 +234,10 @@ func syncJob(ctx context.Context, job config.VolumeJob, localPath, remotePath st
 			if err := mgr.StartContainers(ctx, stopped); err != nil {
 				log.Printf("[%s] Error restarting containers: %v", job.VolumeName, err)
 			}
+		}
+
+		if onDone != nil {
+			onDone()
 		}
 	}
 }
