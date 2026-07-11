@@ -80,7 +80,7 @@ func (s *Syncer) Sync(ctx context.Context, src, dst string) error {
 	ctx = filter.ReplaceConfig(ctx, fi)
 
 	// Create a new stats object for this sync operation
-	// This ensures that progress is tracked per-sync if multiple are running
+	// This ensures that progress is tracked per-sync if multiple is running
 	// Note: GlobalStats is still updated by rclone, but we can track this sync specifically
 	// However, rclone's sync.Sync uses the global accounting if not told otherwise.
 	// For now, we'll use GlobalStats as it's the most reliable way to get what rclone is doing.
