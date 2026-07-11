@@ -118,6 +118,7 @@ func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *docke
 
 		volumePath := filepath.Join(volumesBaseDir, job.VolumeName)
 		remotePath := syncer.JoinPath(globalCfg.DestinationPath, job.SubPath)
+		remotePath = syncer.WrapCompress(remotePath, globalCfg.ResolveCompression(job))
 
 		// Create a syncer for this job
 		f := filter.Opt

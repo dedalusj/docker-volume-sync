@@ -10,6 +10,7 @@ import (
 type GlobalConfig struct {
 	DestinationPath string
 	Location        *time.Location
+	Compression     bool
 }
 
 type VolumeJob struct {
@@ -23,6 +24,18 @@ type VolumeJob struct {
 	ContainerIDs    []string
 	UID             *int
 	GID             *int
+	// Compression is nil when the container carries no compression label, in
+	// which case the global default applies. See ResolveCompression.
+	Compression *bool
+}
+
+// ResolveCompression reports whether compression is enabled for a job, falling
+// back to the global default when the job carries no label override.
+func (g *GlobalConfig) ResolveCompression(job VolumeJob) bool {
+	if job.Compression != nil {
+		return *job.Compression
+	}
+	return g.Compression
 }
 
 func LoadGlobal() (*GlobalConfig, error) {
@@ -41,6 +54,7 @@ func LoadGlobal() (*GlobalConfig, error) {
 	return &GlobalConfig{
 		DestinationPath: dest,
 		Location:        loc,
+		Compression:     os.Getenv("COMPRESSION") == "true",
 	}, nil
 }
 
@@ -57,6 +71,7 @@ const (
 	subPathLabel         = labelPrefix + ".subpath"
 	uidLabel             = labelPrefix + ".uid"
 	gidLabel             = labelPrefix + ".gid"
+	compressionLabel     = labelPrefix + ".compression"
 )
 
 func ParseLabels(labels map[string]string) (*VolumeJob, error) {
@@ -120,6 +135,13 @@ func ParseLabels(labels map[string]string) (*VolumeJob, error) {
 		if err == nil {
 			job.GID = &gid
 		}
+	}
+
+	// Only set when the label is present, so an absent label inherits the
+	// global default while an explicit "false" can disable it.
+	if c, ok := labels[compressionLabel]; ok {
+		compression := c == "true"
+		job.Compression = &compression
 	}
 
 	return job, nil

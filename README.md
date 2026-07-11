@@ -18,6 +18,7 @@ A single container service to synchronize multiple Docker volumes with any remot
 | Variable | Description | Default | Required |
 | :--- | :--- | :--- | :--- |
 | `DESTINATION_PATH` | The destination URI according to rclone syntax (e.g., `s3:my-bucket/backups`). | - | **Yes** |
+| `COMPRESSION` | Set to `true` to compress files at the destination (gzip). Acts as the default for all volumes; override per volume with the `volumesync.compression` label. | `false` | No |
 
 *Note: You must also provide rclone credentials for your `DESTINATION_PATH` via standard rclone environment variables (e.g., `RCLONE_CONFIG_S3_TYPE=s3`).*
 
@@ -35,6 +36,31 @@ A single container service to synchronize multiple Docker volumes with any remot
 | `volumesync.subpath` | Subdirectory under `DESTINATION_PATH` for this volume. | No | `volumesync.volume` |
 | `volumesync.uid` | User ID to apply to folders during initial sync (restore). | No | - |
 | `volumesync.gid` | Group ID to apply to folders during initial sync (restore). | No | - |
+| `volumesync.compression` | Compress this volume's files at the destination. Overrides `COMPRESSION` in both directions, so a volume can opt out of a globally-enabled default. | No | `COMPRESSION` |
+
+## Compression
+
+Setting `COMPRESSION=true` (or `volumesync.compression=true` on a single volume) compresses files
+with gzip on the way to the destination and transparently decompresses them on restore. It is off by
+default.
+
+> [!WARNING]
+> **Only enable compression against a fresh `DESTINATION_PATH`/`subpath`. Never switch it on (or
+> off) over a destination that already holds backups.**
+>
+> Compression changes the on-remote layout: files are stored as `name.<size>.gz` plus a `name.json`
+> sidecar, so the destination is no longer a plain browsable mirror. rclone's compress backend
+> **cannot see** files that were written uncompressed — they simply do not appear when it lists the
+> remote.
+>
+> So if you enable compression over an existing uncompressed backup and a volume is later recreated,
+> the restore will see an empty remote and bring the volume back **empty** — and the next backup with
+> `volumesync.delete=true` will then delete the existing backup from the destination. There is no
+> code guard against this; point compression at a fresh path.
+
+Note that files are only stored gzipped when that actually makes them smaller; incompressible or very
+small files are stored as-is (with a `.bin` extension). rclone marks its compress backend as
+experimental.
 
 ## Usage
 

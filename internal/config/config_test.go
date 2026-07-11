@@ -173,3 +173,90 @@ func TestParseLabels(t *testing.T) {
 		})
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestLoadGlobal_Compression(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want bool
+	}{
+		{name: "UnsetIsOff", env: "", want: false},
+		{name: "True", env: "true", want: true},
+		{name: "False", env: "false", want: false},
+		{name: "GarbageIsOff", env: "yes", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Clearenv()
+			t.Setenv("DESTINATION_PATH", "s3://my-bucket/path")
+			if tt.env != "" {
+				t.Setenv("COMPRESSION", tt.env)
+			}
+
+			got, err := LoadGlobal()
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got.Compression)
+		})
+	}
+}
+
+func TestParseLabels_Compression(t *testing.T) {
+	base := map[string]string{
+		"volumesync.enabled":  "true",
+		"volumesync.volume":   "db_data",
+		"volumesync.schedule": "@hourly",
+	}
+
+	tests := []struct {
+		name  string
+		label *string
+		want  *bool
+	}{
+		{name: "AbsentInheritsGlobal", label: nil, want: nil},
+		{name: "True", label: strPtr("true"), want: boolPtr(true)},
+		{name: "False", label: strPtr("false"), want: boolPtr(false)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels := map[string]string{}
+			for k, v := range base {
+				labels[k] = v
+			}
+			if tt.label != nil {
+				labels["volumesync.compression"] = *tt.label
+			}
+
+			job, err := ParseLabels(labels)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, job.Compression)
+		})
+	}
+}
+
+func TestResolveCompression(t *testing.T) {
+	tests := []struct {
+		name   string
+		global bool
+		job    *bool
+		want   bool
+	}{
+		{name: "NoLabelInheritsGlobalOff", global: false, job: nil, want: false},
+		{name: "NoLabelInheritsGlobalOn", global: true, job: nil, want: true},
+		{name: "LabelEnablesOverGlobalOff", global: false, job: boolPtr(true), want: true},
+		{name: "LabelDisablesOverGlobalOn", global: true, job: boolPtr(false), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := &GlobalConfig{Compression: tt.global}
+			got := g.ResolveCompression(VolumeJob{Compression: tt.job})
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func strPtr(s string) *string { return &s }
