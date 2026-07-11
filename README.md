@@ -37,6 +37,43 @@ A single container service to synchronize multiple Docker volumes with any remot
 | `volumesync.uid` | User ID to apply to folders during initial sync (restore). | No | - |
 | `volumesync.gid` | Group ID to apply to folders during initial sync (restore). | No | - |
 | `volumesync.compression` | Compress this volume's files at the destination. Overrides `COMPRESSION` in both directions, so a volume can opt out of a globally-enabled default. | No | `COMPRESSION` |
+| `volumesync.exclude` | `;`-separated glob patterns to skip (e.g. `*.log;cache/**`). See [Filtering](#filtering). | No | - |
+| `volumesync.include` | `;`-separated glob patterns to sync *exclusively* (e.g. `data/**`). Anything not matching is skipped. See [Filtering](#filtering). | No | - |
+
+## Filtering
+
+Use `volumesync.exclude` to keep junk out of a backup, and `volumesync.include` to back up only part
+of a volume. Both take standard rclone glob patterns. Match a folder and everything under it with
+`**`:
+
+```yaml
+labels:
+  - volumesync.exclude=*.log;cache/**;tmp/**
+  - volumesync.include=data/**
+```
+
+**Patterns are separated by `;`, not `,`** — rclone globs use commas for brace alternation, so a
+pattern like `*.{jpg,png}` stays in one piece.
+
+**Excludes take precedence over includes.** If you set both, the volume is narrowed to the included
+paths and then the excluded ones are carved back out of it:
+
+| | `exclude=*.log`, `include=data/**` |
+|:---|:---|
+| `data/app.db` | backed up |
+| `data/app.log` | skipped — the exclude beats the include |
+| `other/notes.txt` | skipped — not included |
+
+Two things worth knowing:
+
+- **Filters apply to restores too, not just backups.** The same filters are used in both directions,
+  so an excluded path is neither backed up nor restored.
+- **Adding an exclude does not clean up the destination.** Files already backed up under a pattern you
+  later exclude become invisible to the sync: they are neither restored nor deleted, even with
+  `volumesync.delete=true`, and will keep occupying storage until you remove them yourself.
+
+An invalid pattern is not fatal to the service, but that volume is skipped (and logged) rather than
+being backed up with the wrong rules — so its healthcheck will never report ready.
 
 ## Compression
 

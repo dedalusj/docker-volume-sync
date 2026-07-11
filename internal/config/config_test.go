@@ -260,3 +260,76 @@ func TestResolveCompression(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestParseLabels_Patterns(t *testing.T) {
+	base := map[string]string{
+		"volumesync.enabled":  "true",
+		"volumesync.volume":   "db_data",
+		"volumesync.schedule": "@hourly",
+	}
+
+	tests := []struct {
+		name        string
+		include     string
+		exclude     string
+		wantInclude []string
+		wantExclude []string
+	}{
+		{
+			name: "AbsentLabelsAreNil",
+		},
+		{
+			name:        "SinglePattern",
+			exclude:     "*.log",
+			wantExclude: []string{"*.log"},
+		},
+		{
+			name:        "SemicolonSeparated",
+			exclude:     "*.log;cache/**;tmp/**",
+			wantExclude: []string{"*.log", "cache/**", "tmp/**"},
+		},
+		{
+			name:        "WhitespaceIsTrimmed",
+			include:     " data/** ; *.db ",
+			wantInclude: []string{"data/**", "*.db"},
+		},
+		{
+			name:        "EmptySegmentsAreDropped",
+			exclude:     "*.log;;;cache/**;",
+			wantExclude: []string{"*.log", "cache/**"},
+		},
+		{
+			// Commas must survive: rclone globs use them for brace alternation.
+			name:        "CommaIsNotASeparator",
+			exclude:     "*.{jpg,png}",
+			wantExclude: []string{"*.{jpg,png}"},
+		},
+		{
+			name:        "BothLists",
+			include:     "data/**",
+			exclude:     "*.log",
+			wantInclude: []string{"data/**"},
+			wantExclude: []string{"*.log"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels := map[string]string{}
+			for k, v := range base {
+				labels[k] = v
+			}
+			if tt.include != "" {
+				labels["volumesync.include"] = tt.include
+			}
+			if tt.exclude != "" {
+				labels["volumesync.exclude"] = tt.exclude
+			}
+
+			job, err := ParseLabels(labels)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantInclude, job.Include)
+			assert.Equal(t, tt.wantExclude, job.Exclude)
+		})
+	}
+}

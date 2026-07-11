@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,6 +28,10 @@ type VolumeJob struct {
 	// Compression is nil when the container carries no compression label, in
 	// which case the global default applies. See ResolveCompression.
 	Compression *bool
+	// Include and Exclude are rclone glob patterns. Excludes take precedence
+	// over includes, and any include restricts the sync to matching paths.
+	Include []string
+	Exclude []string
 }
 
 // ResolveCompression reports whether compression is enabled for a job, falling
@@ -72,7 +77,25 @@ const (
 	uidLabel             = labelPrefix + ".uid"
 	gidLabel             = labelPrefix + ".gid"
 	compressionLabel     = labelPrefix + ".compression"
+	includeLabel         = labelPrefix + ".include"
+	excludeLabel         = labelPrefix + ".exclude"
+
+	// patternSeparator splits pattern lists. Not a comma: rclone globs use
+	// commas for brace alternation, as in *.{jpg,png}.
+	patternSeparator = ";"
 )
+
+// parsePatterns splits a pattern label into its individual glob patterns,
+// trimming whitespace and dropping empty entries.
+func parsePatterns(value string) []string {
+	var patterns []string
+	for _, p := range strings.Split(value, patternSeparator) {
+		if p = strings.TrimSpace(p); p != "" {
+			patterns = append(patterns, p)
+		}
+	}
+	return patterns
+}
 
 func ParseLabels(labels map[string]string) (*VolumeJob, error) {
 	if labels[enabledLabel] != "true" {
@@ -143,6 +166,9 @@ func ParseLabels(labels map[string]string) (*VolumeJob, error) {
 		compression := c == "true"
 		job.Compression = &compression
 	}
+
+	job.Include = parsePatterns(labels[includeLabel])
+	job.Exclude = parsePatterns(labels[excludeLabel])
 
 	return job, nil
 }

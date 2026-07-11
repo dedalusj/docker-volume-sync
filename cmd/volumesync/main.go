@@ -120,11 +120,18 @@ func processJobs(ctx context.Context, globalCfg *config.GlobalConfig, mgr *docke
 		remotePath := syncer.JoinPath(globalCfg.DestinationPath, job.SubPath)
 		remotePath = syncer.WrapCompress(remotePath, globalCfg.ResolveCompression(job))
 
+		rules, err := syncer.BuildFilterRules(job.Exclude, job.Include)
+		if err != nil {
+			log.Printf("[%s] Invalid filter pattern, skipping volume: %v", job.VolumeName, err)
+			continue
+		}
+
 		// Create a syncer for this job
 		f := filter.Opt
 		f.MinAge = fs.DurationOff
 		f.MaxAge = fs.DurationOff
-		f.FilterRule = []string{"- " + sentinelFilename}
+		// The sentinel rule goes first so it always wins over the user's rules.
+		f.FilterRule = append([]string{"- " + sentinelFilename}, rules...)
 
 		s, err := syncer.New(ctx,
 			syncer.WithConcurrency(job.Concurrency),
